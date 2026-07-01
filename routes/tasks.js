@@ -56,7 +56,17 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    Object.assign(task, req.body);
+    const updates = { ...req.body };
+
+    // Prevent moving a task to a board the user doesn't own
+    if (updates.board && String(updates.board) !== String(task.board._id)) {
+      const targetBoard = await verifyBoardOwnership(updates.board, req.user._id);
+      if (!targetBoard) {
+        return res.status(403).json({ message: 'Not authorized to move task to that board' });
+      }
+    }
+
+    Object.assign(task, updates);
     await task.save();
 
     res.json(task);
@@ -71,8 +81,19 @@ router.put('/reorder/bulk', async (req, res) => {
   try {
     const { tasks } = req.body; // [{ _id, column, order }, ...]
 
-    if (!Array.isArray(tasks)) {
-      return res.status(400).json({ message: 'tasks must be an array' });
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return res.status(400).json({ message: 'tasks must be a non-empty array' });
+    }
+
+    const taskIds = tasks.map((t) => t._id);
+    const ownedTasks = await Task.find({ _id: { $in: taskIds } }).populate('board');
+
+    const allOwned =
+      ownedTasks.length === taskIds.length &&
+      ownedTasks.every((t) => t.board && String(t.board.owner) === String(req.user._id));
+
+    if (!allOwned) {
+      return res.status(403).json({ message: 'Not authorized to reorder one or more tasks' });
     }
 
     const bulkOps = tasks.map((t) => ({
